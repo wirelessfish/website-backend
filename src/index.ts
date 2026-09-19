@@ -13,6 +13,7 @@ import {
   LastFmProxyQuery,
   POST_guestbookSchema,
   POST_Message,
+  POST_ntfy,
 } from "./types.js";
 import { proxyLastFm } from "./lastfm.js";
 import { backup, get_guestbook, insert_guestbook, terminate_db } from "./db.js";
@@ -58,12 +59,16 @@ cron.schedule(
   () => {
     try {
       backup();
+
+      ntfy(`Weekly backup finished`, NTFY_URL_BACKEND).catch((ntfy_error) => {
+        console.error(ntfy_error);
+      });
     } catch (backup_error) {
       if (backup_error instanceof Error) {
         console.log(backup_error);
 
         ntfy(
-          `WEEKLY BACKUP FAILED: ${backup_error.name}`,
+          `Weekly backup FAILED: ${backup_error.name}`,
           NTFY_URL_BACKEND,
         ).catch((ntfy_error) => {
           console.error(ntfy_error);
@@ -138,6 +143,22 @@ fastify.get("/guestbook", async function (request, reply) {
   reply.send(get_guestbook());
 });
 
+// POST /notify
+fastify.post<{ Body: { message: string } }>(
+  "/notify",
+  { schema: POST_ntfy },
+  async function (request, reply) {
+    try {
+      await ntfy(request.body.message, NTFY_URL_BACKEND);
+      reply.code(201).send();
+    } catch (error) {
+      if (error instanceof Error) {
+        reply.code(500).send(`${error.name}: ${error.message}`);
+      }
+    }
+  },
+);
+
 // POST /guestbook
 fastify.post<{ Body: POST_Message }>(
   "/guestbook",
@@ -173,6 +194,15 @@ fastify.post<{ Body: POST_Message }>(
     }
 
     reply.code(201).send();
+
+    try {
+      await ntfy(
+        `[Guestbook] New comment by ${request.body.name}`,
+        NTFY_URL_BACKEND,
+      );
+    } catch (error) {
+      console.error(error);
+    }
   },
 );
 
