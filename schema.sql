@@ -1,16 +1,10 @@
-CREATE TABLE messages (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    created TEXT DEFAULT CURRENT_TIMESTAMP NOT NULL,
+CREATE TABLE IF NOT EXISTS guestbook (
+    id TEXT PRIMARY KEY,
+    reply TEXT,
+    date TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     name TEXT NOT NULL,
-    content TEXT NOT NULL,
-    reply_to INTEGER,
-    visible INTEGER DEFAULT 1 NOT NULL,
-    verified INTEGER DEFAULT 0 NOT NULL,
-    site TEXT
-  );
-CREATE TABLE sqlite_sequence(name,seq);
-CREATE TABLE ntfy (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    date TEXT DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    text TEXT NOT NULL
-  );
+    message TEXT NOT NULL,
+    visible INTEGER NOT NULL DEFAULT 1,
+    website TEXT,
+    FOREIGN KEY (reply) REFERENCES guestbook(id)
+);

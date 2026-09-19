@@ -1,183 +1,177 @@
-import express from "express";
+import Fastify from "fastify";
+import si from "systeminformation";
+import validator from "validator";
+import cron from "node-cron";
+import "dotenv/config";
+
 import {
-  backup,
-  getMessageData,
-  insertMessage,
-  insertNotification,
-} from "./database.js";
-import dotenv from "dotenv";
-import cors from "cors";
-import { rateLimit } from "express-rate-limit";
-import * as cron from "node-cron";
+  InvalidReplyError,
+  LastFmProxyParams,
+  LastFmProxyQuery,
+  POST_guestbookSchema,
+  POST_Message,
+} from "./types.js";
 import { proxyLastFm } from "./lastfm.js";
-import { z } from "zod";
+import { backup, get_guestbook, insert_guestbook, terminate_db } from "./db.js";
 
-dotenv.config({ quiet: true });
-const DEV_ENV = process.env.DEV_ENV;
-const NTFY_BACKEND = process.env.NTFY_BACKEND;
-const NTFY_MOBILE = process.env.NTFY_MOBILE;
+const PORT = 3000;
+const NTFY_URL_BACKEND = process.env.NTFY_URL_BACKEND;
 
-const app = express();
-const port = 3000;
-app.use(express.json());
-app.use(cors());
-app.set("trust proxy", 1);
-
-if (!NTFY_BACKEND) {
-  throw new Error("No NTFY_BACKEND env variable!");
-} else if (!NTFY_MOBILE) {
-  throw new Error("No NTFY_MOBILE env variable!");
+if (!NTFY_URL_BACKEND) {
+  throw new Error("Env var `NTFY_URL_BACKEND` is not defined!");
 }
 
-if (!DEV_ENV) {
-  const limiter = rateLimit({
-    windowMs: 5 * 60 * 1000, // 5 minutes
-    limit: 100, // Limit each IP to 100 requests per `window` (here, per 15 minutes).
-    standardHeaders: "draft-8", // draft-6: `RateLimit-*` headers; draft-7 & draft-8: combined `RateLimit` header
-    legacyHeaders: false, // Disable the `X-RateLimit-*` headers.
-    ipv6Subnet: 56, // Set to 60 or 64 to be less aggressive, or 52 or 48 to be more aggressive
-    // store: ... , // Redis, Memcached, etc. See below.
-  });
+const fastify = Fastify({
+  logger: false,
+});
 
-  app.use(limiter);
-}
+process.on("SIGTERM", () => {
+  terminate_db();
+  process.exit(0);
+});
 
-async function notify(url: string, msg: string) {
-  let resp = await fetch(url, {
-    method: "POST", // PUT works too
+async function ntfy(msg: string, url: string) {
+  const response = await fetch(`${url}`, {
+    method: "POST",
     body: msg,
-    headers: {
-      "Content-Type": "text/plain",
-      "User-Agent": "vercel-serverless",
-    },
   });
 
-  if (!resp.ok) {
+  if (!response.ok) {
     throw new Error(
-      `Error trying to send ntfy.sh notification (${resp.status}). ${await resp.json()}`,
+      `Error trying to send ntfy.sh notification to ${url}: ${response.status} - ${await response.json()}`,
     );
   }
 }
 
-app.get("/", (req, res): void => {
-  res.status(200).json("I am alive.");
+// Run the backup every midnight between friday and saturday
+cron.schedule(
+  "0 0 * * 6",
+  () => {
+    try {
+      backup();
+    } catch (backup_error) {
+      if (backup_error instanceof Error) {
+        console.log(backup_error);
+
+        ntfy(
+          `WEEKLY BACKUP FAILED: ${backup_error.name}`,
+          NTFY_URL_BACKEND,
+        ).catch((ntfy_error) => {
+          console.error(ntfy_error);
+        });
+      }
+    }
+  },
+  {
+    timezone: "Europe/Prague",
+  },
+);
+
+// GET /
+fastify.get("/", function (request, reply) {
+  reply.code(200).send({ status: "online" });
 });
 
-app.get("/guestbook", (req, res) => {
-  res.json(getMessageData());
+// GET /status
+fastify.get("/status", async function (request, reply) {
+  const currentLoad = await si.currentLoad();
+  const memory = await si.mem();
+  const temperature = await si.cpuTemperature();
+  const filesystems = await si.fsSize();
+
+  const status = {
+    memoryTotal: memory.total,
+    memoryFree: memory.free,
+    cpuUsage: currentLoad.avgLoad,
+    temperature: temperature.main,
+    filesystems,
+  };
+
+  reply.code(200).send(status);
 });
 
-app.get("/lastfm", async (req, res) => {
+// GET /lastfm
+fastify.get("/lastfm", async function (request, reply) {
   const lastfm_res = await fetch("https://ws.audioscrobbler.com/2.0/");
 
   if (lastfm_res.status < 500) {
-    res.status(200).json(`lastfm's api seems to be running!`);
+    reply.code(200).send({ status: "online" });
   } else {
-    res
-      .status(502)
-      .json(`lastfm's api seems to be down, (response ${lastfm_res.status})`);
+    reply
+      .code(502)
+      .send({ status: `unreachable, (response ${lastfm_res.status})` });
   }
 });
 
-// Last.fm proxy
-app.get("/lastfm/proxy/:method", async (req, res) => {
-  const method = req.params.method;
-  const { user, ...rest } = req.query;
+// GET /lastfm/proxy/:method
+fastify.get<{
+  Params: LastFmProxyParams;
+  Querystring: LastFmProxyQuery;
+}>("/lastfm/proxy/:method", async function (request, reply) {
+  const { method } = request.params;
 
-  if (!user) {
-    res.status(400).json("`user` query is missing");
-    return;
-  }
-
-  const queryParams: Record<string, string> = { user: user.toString() };
-  for (const [key, value] of Object.entries(rest)) {
+  const queryParams: Record<string, string> = {};
+  for (const [key, value] of Object.entries(request.query)) {
     if (typeof value === "string") queryParams[key] = value;
   }
 
   try {
-    res.status(200).json(await proxyLastFm(method, queryParams));
+    reply.code(200).send(await proxyLastFm(method, queryParams));
   } catch (e: any) {
     console.error(`Error in /lastfm/proxy/${method}:`, e);
     const status = e.message?.startsWith("Method") ? 400 : 500;
-    res.status(status).json(e.message);
+    reply.code(status).send({ error: e.message });
   }
 });
 
-const GuestbookQuery = z.object({
-  name: z.string(),
-  content: z.string(),
-  reply_to: z.coerce
-    .number()
-    .int()
-    .positive()
-    .optional()
-    .transform((v) => v ?? null),
-
-  // web url regex, see "Web URLs" section of https://zod.dev/api?id=optionals#urls
-  site: z
-    .preprocess(
-      (v) => (v === "" || v == null ? undefined : v),
-      z
-        .url({
-          protocol: /^https?$/,
-          hostname: z.regexes.domain,
-        })
-        .optional(),
-    )
-    .transform((v) => v ?? null),
+// GET /guestbook
+fastify.get("/guestbook", async function (request, reply) {
+  reply.send(get_guestbook());
 });
 
-app.post("/guestbook", async (req, res) => {
-  const result = GuestbookQuery.safeParse(req.body);
-  if (!result.success)
-    return res.status(400).json(z.treeifyError(result.error));
+// POST /guestbook
+fastify.post<{ Body: POST_Message }>(
+  "/guestbook",
+  { schema: POST_guestbookSchema },
+  async function (request, reply) {
+    // website
+    if (
+      request.body.website != null &&
+      !validator.isURL(request.body.website, {
+        protocols: ["http", "https"],
+        require_protocol: true,
+      })
+    ) {
+      reply.code(400).send({ error: "'website' is not a valid URL" });
+      return;
+    }
 
-  const { name, content, reply_to, site } = result.data;
-  insertMessage(name, content, reply_to, site);
+    try {
+      insert_guestbook({
+        name: request.body.name,
+        message: request.body.message,
+        reply: request.body.reply ?? null,
+        website: request.body.website ?? null,
+      });
+    } catch (error) {
+      if (error instanceof InvalidReplyError) {
+        reply.code(400).send({ error: "Invalid target reply id" });
+        return;
+      } else if (error instanceof Error) {
+        reply.code(500).send({ error: `${error.name}: ${error.message}` });
+        return;
+      }
+    }
 
-  await notify(
-    NTFY_BACKEND,
-    `[${new Date().toLocaleDateString()}] New guestbook comment by "${name}"`,
-  );
+    reply.code(201).send();
+  },
+);
 
-  res.sendStatus(200);
-});
-
-const NtfyQuery = z.object({
-  text: z.string(),
-});
-
-app.post("/ntfy", async (req, res) => {
-  const result = NtfyQuery.safeParse(req.body);
-  if (!result.success)
-    return res.status(400).json(z.treeifyError(result.error));
-
-  try {
-    insertNotification(result.data.text);
-    await notify(NTFY_MOBILE, result.data.text);
-    res.sendStatus(200);
-  } catch (e) {
-    console.error("Error in /ntfy endpoint:", e);
-    res.status(500).json("ERROR: Failed to process notification");
+fastify.listen({ port: PORT }, function (err, address) {
+  if (err) {
+    fastify.log.error(err);
+    process.exit(1);
   }
 });
 
-app.listen(port, "0.0.0.0", () => {
-  console.log(`Listening on port http://localhost:${port}`);
-});
-
-cron.schedule("0 2 * * Sunday", async () => {
-  console.log("[CRON] Initiating weekly backup");
-
-  try {
-    await backup();
-    console.log("[CRON] Weekly backup completed successfully");
-  } catch (error) {
-    console.error("[CRON] Weekly backup failed:", error);
-  }
-});
-
-console.log("Init database backup");
-await backup();
-
-export default app;
+console.log(`Server is now listening on ${PORT}`);
