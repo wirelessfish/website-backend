@@ -2,6 +2,9 @@ import Fastify from "fastify";
 import si from "systeminformation";
 import validator from "validator";
 import cron from "node-cron";
+import rateLimit from "@fastify/rate-limit";
+import cors from "@fastify/cors";
+
 import "dotenv/config";
 
 import {
@@ -22,13 +25,19 @@ if (!NTFY_URL_BACKEND) {
 }
 
 const fastify = Fastify({
-  logger: false,
+  logger: true,
+  trustProxy: true,
 });
 
-process.on("SIGTERM", () => {
-  terminate_db();
-  process.exit(0);
-});
+if (process.env.RATELIMIT === "true") {
+  await fastify.register(rateLimit, { max: 50, timeWindow: "1 minute" });
+}
+
+if (process.env.CORS === "true") {
+  await fastify.register(cors, {
+    origin: ["https://wireless.fish"],
+  });
+}
 
 async function ntfy(msg: string, url: string) {
   const response = await fetch(`${url}`, {
@@ -172,6 +181,11 @@ fastify.listen({ port: PORT }, function (err, address) {
     fastify.log.error(err);
     process.exit(1);
   }
+
+  console.log(`Server is listening at ${address}`);
 });
 
-console.log(`Server is now listening on ${PORT}`);
+process.on("SIGTERM", () => {
+  terminate_db();
+  process.exit(0);
+});

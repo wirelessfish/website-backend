@@ -60,12 +60,12 @@ export const POST_guestbookSchema = {
       name: {
         type: "string",
         minLength: 1,
-        maxLength: process.env.GUESTBOOK_MAX_NAME_LEN,
+        maxLength: Number(process.env.GUESTBOOK_MAX_NAME_LEN) || 80,
       },
       message: {
         type: "string",
         minLength: 1,
-        maxLength: process.env.GUESTBOOK_MAX_MESSAGE_LEN,
+        maxLength: Number(process.env.GUESTBOOK_MAX_MESSAGE_LEN) || 2000,
       },
       reply: {
         anyOf: [{ type: "string", format: "uuid" }, { type: "null" }],
