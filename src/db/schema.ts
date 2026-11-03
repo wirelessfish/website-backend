@@ -7,7 +7,7 @@ import {
 } from "drizzle-orm/sqlite-core";
 
 export const GUESTBOOK_ENTRY_STATUS = ["visible", "hidden"] as const;
-export const GUESTBOOK_BADGE = ["none", "owner"] as const;
+export const GUESTBOOK_BADGE = ["owner"] as const;
 
 export const guestbookTable = sqliteTable("guestbook", {
   id: int("id").primaryKey({ autoIncrement: true }),
@@ -21,7 +21,7 @@ export const guestbookTable = sqliteTable("guestbook", {
   status: text("status", { enum: GUESTBOOK_ENTRY_STATUS })
     .notNull()
     .default("visible"),
-  badge: text("badge", { enum: GUESTBOOK_BADGE }).default("none"),
+  badge: text("badge", { enum: GUESTBOOK_BADGE }),
 });
 
 export const ntfyTable = sqliteTable("ntfy", {
@@ -29,5 +29,5 @@ export const ntfyTable = sqliteTable("ntfy", {
   date: text("date")
     .notNull()
     .default(sql`(current_timestamp)`),
-  content: text("content"),
+  content: text("content").notNull(),
 });
