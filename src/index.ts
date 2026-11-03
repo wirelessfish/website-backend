@@ -12,6 +12,7 @@ import Database from "better-sqlite3";
 import path from "node:path";
 import { mkdirSync, readdirSync, statSync, unlinkSync } from "node:fs";
 import cron from "node-cron";
+import proxy from "@fastify/http-proxy";
 
 const DB_FILE_NAME = process.env.DB_FILE_NAME;
 if (!DB_FILE_NAME) throw new Error("DB_FILE_NAME not set");
@@ -28,6 +29,12 @@ if (!DB_BACKUP_DIR) throw new Error("DB_BACKUP_DIR not set");
 const BACKUPS_KEPT = Number(process.env.BACKUPS_KEPT);
 if (!BACKUPS_KEPT) throw new Error("BACKUPS_KEPT not set");
 
+const LISTENBRAINZ_TOKEN = process.env.LISTENBRAINZ_TOKEN;
+if (!LISTENBRAINZ_TOKEN) throw new Error("LISTENBRAINZ_TOKEN not set");
+
+const USER_AGENT = process.env.USER_AGENT;
+if (!USER_AGENT) throw new Error("USER_AGENT not set");
+
 const RATELIMIT = process.env.RATELIMIT !== "false";
 
 const sqlite_db = new Database(DB_FILE_NAME);
@@ -39,6 +46,36 @@ const db = drizzle(sqlite_db);
 const fastify = Fastify({
   logger: true,
 }).withTypeProvider<TypeBoxTypeProvider>();
+
+await fastify.register(cors, {
+  origin: "https://wireless.fish",
+});
+
+if (RATELIMIT) {
+  await fastify.register(rateLimit, {
+    max: 64,
+    timeWindow: "1 minute",
+  });
+}
+
+fastify.register(proxy, {
+  upstream: "https://api.listenbrainz.org",
+  prefix: "/listenbrainz",
+  http2: false,
+  replyOptions: {
+    rewriteRequestHeaders: (original, headers) => ({
+      ...headers,
+      Authorization: `Token ${LISTENBRAINZ_TOKEN}`,
+      "user-agent": USER_AGENT,
+    }),
+  },
+  config: {
+    rateLimit: {
+      max: 1,
+      timeWindow: "1 second",
+    },
+  },
+});
 
 async function ntfy(type: "endpoint" | "notif", content: string) {
   const url =
@@ -120,17 +157,6 @@ export async function backup() {
       throw err;
     }
   }
-}
-
-await fastify.register(cors, {
-  origin: "https://wireless.fish",
-});
-
-if (RATELIMIT) {
-  await fastify.register(rateLimit, {
-    max: 64,
-    timeWindow: "1 minute",
-  });
 }
 
 fastify.get("/", function (request, reply) {
