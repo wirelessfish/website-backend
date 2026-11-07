@@ -51,7 +51,7 @@ export const Config = {
     generalNotifications: GENERAL_NOTIFICATIONS,
   },
   cors: {
-    allowList: new Array("https://f1sh.cz/, http://f1sh.cz/"),
+    allowList: new Array("https://f1sh.cz"),
     enabled: CORS_ENABLED,
   },
   logging: {
