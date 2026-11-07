@@ -87,20 +87,16 @@ fastify.register(proxy, {
       if (!response.ok) {
         log("ERROR", "LastFM is unhealthy");
 
-        await reply.code(502).send({
+        return reply.code(502).send({
           status: "unhealthy",
           upstreamStatus: response.status,
         });
-
-        return;
       }
 
-      await reply.send({
+      return reply.send({
         status: "healthy",
         upstreamStatus: response.status,
       });
-
-      return;
     }
 
     // Query method check
@@ -112,11 +108,9 @@ fastify.register(proxy, {
     ) {
       log("ERROR", `Invalid LastFM method used: ${method}`);
 
-      await reply.code(400).send({
+      return reply.code(400).send({
         error: "Unsupported or missing Last.fm method",
       });
-
-      return;
     }
   },
   handler: async (request, reply, dest, options) => {
@@ -229,10 +223,10 @@ fastify.register(proxy, {
         }),
       );
 
-      return reply.send(lastFmData);
+      return reply.code(200).send(lastFmData);
     }
 
-    return reply.send(lastFmData);
+    return reply.code(200).send(lastFmData);
   },
 });
 
@@ -340,7 +334,7 @@ export async function backup() {
 }
 
 fastify.get("/", function (request, reply) {
-  reply.send({ status: "alive" });
+  return reply.code(200).send({ status: "alive" });
 });
 
 fastify.post(
@@ -450,8 +444,7 @@ fastify.post(
       log("ERROR", `ntfy error`, e);
     }
 
-    await reply.code(201);
-    return;
+    return reply.code(201).send();
   },
 );
 
