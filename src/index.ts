@@ -523,7 +523,7 @@ cron.schedule("0 2 * * Sunday", async () => {
 log("INFO", "Init database backup");
 await backup();
 
-fastify.listen({ port: Config.port }, function (err, address) {
+fastify.listen({ host: "0.0.0.0", port: Config.port }, function (err, address) {
   if (err) {
     fastify.log.error(err);
     process.exit(1);
