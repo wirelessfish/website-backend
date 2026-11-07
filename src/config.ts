@@ -23,6 +23,8 @@ const RATELIMIT = process.env.RATELIMIT !== "false";
 const GENERAL_NOTIFICATIONS = process.env.GENERAL_NOTIFICATIONS !== "false";
 
 export const Config = {
+  port: 3000,
+  fastifyLogger: false,
   userAgent: USER_AGENT,
   ratelimit: RATELIMIT,
   lastfm: {
@@ -35,7 +37,7 @@ export const Config = {
       "user.gettoptracks",
       "user.gettopalbums",
       "user.getinfo",
-      "artist.getInfo",
+      "artist.getinfo",
     ],
   },
   database: {
@@ -52,4 +54,7 @@ export const Config = {
     allowList: new Array("https://f1sh.cz, http://f1sh.cz"),
     enabled: CORS_ENABLED,
   },
-} as const;
+  logging: {
+    enabledCategories: ["DEBUG", "INFO", "WARN", "ERROR"],
+  },
+};

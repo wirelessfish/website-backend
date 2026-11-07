@@ -13,15 +13,10 @@ import { mkdirSync, readdirSync, statSync, unlinkSync } from "node:fs";
 import cron from "node-cron";
 import proxy from "@fastify/http-proxy";
 import { Config } from "./config.js";
+import { log } from "./log.js";
 
 if (!Config.ntfy.generalNotifications) {
-  console.log("[INFO] General notifications are DISABLED");
-}
-
-if (!Config.cors.enabled) {
-  console.log("[INFO] CORS is set to ['*']");
-} else {
-  console.log(`[INFO] CORS is set to ${Config.cors.allowList}`);
+  log("INFO", "General notifications are DISABLED");
 }
 
 const sqlite_db = new Database(Config.database.filename);
@@ -31,17 +26,21 @@ sqlite_db.pragma("journal_mode = WAL");
 const db = drizzle(sqlite_db);
 
 const fastify = Fastify({
-  logger: true,
+  logger: Config.fastifyLogger,
 }).withTypeProvider<TypeBoxTypeProvider>();
 
 if (Config.cors.enabled) {
   await fastify.register(cors, {
     origin: Config.cors.allowList,
   });
+
+  log("DEBUG", "CORS is set to ${Config.cors.allowList}`");
 } else {
   await fastify.register(cors, {
     origin: "*",
   });
+
+  log("DEBUG", "CORS is set to '*'");
 }
 
 if (Config.ratelimit) {
@@ -51,7 +50,7 @@ if (Config.ratelimit) {
   });
 }
 
-async function checkLastFmHealth(reply: FastifyReply) {
+async function checkLastFmHealth() {
   const url = new URL("/2.0/", Config.lastfm.upstream);
   url.searchParams.set("method", "chart.gettopartists");
   url.searchParams.set("api_key", Config.lastfm.apiKey);
@@ -72,9 +71,11 @@ fastify.register(proxy, {
 
     // Healthcheck
     if (method === undefined) {
-      let response = await checkLastFmHealth(reply);
+      let response = await checkLastFmHealth();
 
       if (!response.ok) {
+        log("ERROR", "LastFM is unhealthy");
+
         await reply.code(502).send({
           status: "unhealthy",
           upstreamStatus: response.status,
@@ -98,9 +99,12 @@ fastify.register(proxy, {
         method as (typeof Config.lastfm.methods)[number],
       )
     ) {
+      log("ERROR", `Invalid LastFM method used: ${method}`);
+
       await reply.code(400).send({
         error: "Unsupported or missing Last.fm method",
       });
+
       return;
     }
   },
@@ -115,12 +119,109 @@ fastify.register(proxy, {
 
     query.set("api_key", Config.lastfm.apiKey);
     query.set("format", "json");
+    const method = requestUrl.searchParams.get("method");
 
-    // Debug thing
-    // console.log(`Last.fm proxy fetching: ${upstreamUrl}`);
+    const logUpstreamURL = new URL(upstreamUrl);
+    logUpstreamURL.searchParams.set("api_key", "hidden");
+    log("DEBUG", `Last.fm proxy fetching: ${logUpstreamURL}`);
 
-    await reply.from(`${upstreamUrl.pathname}?${query.toString()}`, options);
-    return;
+    const lastFmResponse = await fetch(upstreamUrl);
+    if (!lastFmResponse.ok) {
+      log("ERROR", "LastFM reply not ok");
+      return reply.from(dest, options);
+    }
+
+    const lastFmData = (await lastFmResponse.json()) as {
+      topartists?: {
+        artist?: Array<{
+          name?: string;
+          image?: Array<{ "#text": string; size: string }>;
+        }>;
+      };
+    };
+
+    if (method === "user.gettopartists") {
+      const artists = lastFmData.topartists?.artist ?? [];
+      log(
+        "DEBUG",
+        `Intercepting ${artists.length} top artists for Deezer images`,
+      );
+
+      await Promise.all(
+        artists.map(async (artist) => {
+          if (!artist.name) {
+            return;
+          }
+
+          const deezerUrl = new URL("https://api.deezer.com/search/artist");
+          deezerUrl.searchParams.set("q", artist.name);
+          deezerUrl.searchParams.set("limit", "10");
+          deezerUrl.searchParams.set("strict", "on");
+
+          const deezerResponse = await fetch(deezerUrl);
+
+          if (!deezerResponse.ok) {
+            log(
+              "ERROR",
+              `Deezer artist request failed (${deezerResponse.status})`,
+            );
+            return;
+          }
+
+          const deezerData = (await deezerResponse.json()) as {
+            data?: Array<{
+              picture_small?: string;
+              picture_medium?: string;
+              picture_big?: string;
+              picture_xl?: string;
+              nb_fan?: number;
+              name: string;
+            }>;
+          };
+
+          // because strict mode doesn't work for some reason
+          deezerData.data = deezerData.data?.filter(
+            (a) => a.name == artist.name,
+          );
+
+          const deezerArtist = deezerData.data
+            ?.sort((a, b) => (b.nb_fan ?? 0) - (a.nb_fan ?? 0))
+            .at(0);
+
+          if (!deezerArtist) {
+            return;
+          }
+
+          artist.image ??= [];
+
+          const images = [
+            ["small", deezerArtist.picture_small],
+            ["medium", deezerArtist.picture_medium],
+            ["large", deezerArtist.picture_big],
+            ["extralarge", deezerArtist.picture_xl],
+            ["mega", deezerArtist.picture_xl],
+          ] as const;
+
+          for (const [size, url] of images) {
+            if (!url) {
+              continue;
+            }
+
+            const image = artist.image.find((item) => item.size === size);
+
+            if (image) {
+              image["#text"] = url;
+            } else {
+              artist.image.push({ size, "#text": url });
+            }
+          }
+        }),
+      );
+
+      return reply.send(lastFmData);
+    }
+
+    return reply.send(lastFmData);
   },
 });
 
@@ -142,35 +243,45 @@ async function ntfy(type: "endpoint" | "notif", content: string) {
 }
 
 export async function backup() {
-  console.log(`[${Date.now()}] Backup initiated`);
-
   const backupPath = path.join(
     Config.database.backupDir,
     `${Date.now()}.backup.db`,
   );
 
+  log("DEBUG", "backupPath =", backupPath);
+
+  // backup directory
   try {
     mkdirSync(Config.database.backupDir as string, { recursive: true });
   } catch (e) {
     if (e instanceof Error) {
-      console.log(
-        `Failed to create the backup directory ${Config.database.backupDir}\n${e}`,
+      log(
+        "ERROR",
+        `Failed to create backup directory ${Config.database.backupDir}`,
+        e,
       );
 
-      await ntfy(
-        "notif",
-        `Backup FAILED at ${new Date().toLocaleString("cs-CZ")}. [${e.name}]`,
-      );
+      try {
+        await ntfy(
+          "notif",
+          `Backup FAILED at ${new Date().toLocaleString("cs-CZ")}. [${e.name}]`,
+        );
+      } catch (e) {
+        log("ERROR", `ntfy error`, e);
+      }
     }
 
     return;
   }
 
+  // actual db backup
   try {
     await sqlite_db.backup(backupPath);
-    console.log("Backup complete!");
 
-    console.log("Purging old backups");
+    log(
+      "DEBUG",
+      `DB Saved, removing old backups (keep ${Config.database.backupsKept} files)`,
+    );
 
     const files = readdirSync(Config.database.backupDir as string, {
       withFileTypes: true,
@@ -189,7 +300,7 @@ export async function backup() {
     const filesToDelete = files.slice(Config.database.backupsKept);
     filesToDelete.forEach((f) => unlinkSync(f.path));
 
-    console.log("Old backups deleted");
+    log("DEBUG", "Old backups deleted");
 
     try {
       await ntfy(
@@ -197,18 +308,22 @@ export async function backup() {
         `Backup complete at ${new Date().toLocaleString("cs-CZ")}`,
       );
     } catch (e) {
-      console.error(`ntfy() error: ${e}`);
+      log("ERROR", `ntfy error`, e);
     }
   } catch (err) {
     if (err instanceof Error) {
-      console.error("Backup failed:", err);
+      log("ERROR", "Backup failed", err);
 
-      await ntfy(
-        "notif",
-        `Backup FAILED at ${new Date().toLocaleString("cs-CZ")}. [${err.name}]`,
-      );
+      try {
+        await ntfy(
+          "notif",
+          `Backup FAILED at ${new Date().toLocaleString("cs-CZ")}. [${err.name}]`,
+        );
+      } catch (e) {
+        log("ERROR", `ntfy error`, e);
+      }
 
-      throw err;
+      return;
     }
   }
 }
@@ -229,9 +344,15 @@ fastify.post(
   async function (request, reply) {
     const content = request.body.content;
 
+    log("DEBUG", "New ntfy push:", content);
+
     await db.insert(ntfyTable).values({ content });
 
-    await ntfy("endpoint", content);
+    try {
+      await ntfy("endpoint", content);
+    } catch (e) {
+      log("ERROR", `ntfy error`, e);
+    }
 
     await reply.code(200);
   },
@@ -250,6 +371,15 @@ fastify.post(
     },
   },
   async function (request, reply) {
+    log(
+      "DEBUG",
+      "New guestbook push",
+      `name=${request.body.name}`,
+      `content=${request.body.content}`,
+      `site=${request.body.site}`,
+      `reply=${request.body.reply}`,
+    );
+
     if (request.body.reply !== undefined) {
       let targetComment = await db
         .select()
@@ -258,6 +388,11 @@ fastify.post(
 
       // only allow replies to existing IDs
       if (targetComment.length === 0) {
+        log(
+          "ERROR",
+          `Cannot reply, target comment ID ${request.body.reply} does not exist`,
+        );
+
         await reply
           .send({
             error: `Comment ID (${request.body.reply}) you are replying to does not exist!`,
@@ -268,6 +403,8 @@ fastify.post(
 
       // disallow replying to replies
       if (targetComment[0].reply !== undefined) {
+        log("ERROR", "Replying to reply forbidden");
+
         await reply
           .send({
             error: `Replying to replies is currently unsupported!`,
@@ -278,6 +415,8 @@ fastify.post(
 
       // disallow replying to hidden comments
       if (targetComment[0].status === "hidden") {
+        log("ERROR", "Replying to hidden comments forbidden");
+
         await reply
           .send({
             error: `Cannot reply to hidden comments!`,
@@ -294,7 +433,11 @@ fastify.post(
       reply: request.body.reply,
     });
 
-    await ntfy("notif", `Guestbook entry by ${request.body.name}`);
+    try {
+      await ntfy("notif", `Guestbook entry by ${request.body.name}`);
+    } catch (e) {
+      log("ERROR", `ntfy error`, e);
+    }
 
     await reply.code(201);
     return;
@@ -367,20 +510,20 @@ fastify.get("/guestbook", async function (request, reply) {
 });
 
 cron.schedule("0 2 * * Sunday", async () => {
-  console.log("[CRON] Initiating weekly backup");
+  log("INFO", "Initiating weekly backup");
 
   try {
     await backup();
-    console.log("[CRON] Weekly backup completed successfully");
+    log("INFO", "Weekly backup completed successfully");
   } catch (error) {
-    console.error("[CRON] Weekly backup failed:", error);
+    log("ERROR", "Weekly backup failed:", error);
   }
 });
 
-console.log("Init database backup");
+log("INFO", "Init database backup");
 await backup();
 
-fastify.listen({ port: 3000 }, function (err, address) {
+fastify.listen({ port: Config.port }, function (err, address) {
   if (err) {
     fastify.log.error(err);
     process.exit(1);
