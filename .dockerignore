@@ -5,7 +5,7 @@ backup
 dist
 .env
 *.log
-docker-compose*.yml
+docker-compose.yml
 Dockerfile
 .dockerignore
 .gitignore

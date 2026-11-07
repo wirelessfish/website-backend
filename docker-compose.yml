@@ -1,26 +1,30 @@
 services:
   website-backend:
+    image: ghcr.io/wirelessfish/website-backend:latest
+    networks: [website]
     container_name: website-backend
     dns:
       - 1.1.1.1
       - 8.8.8.8
-    build: .
     restart: unless-stopped
     ports:
       - "3000:3000"
     volumes:
       - ./data:/app/data
-      - ./backup:/app/backup
     environment:
       - NODE_ENV=production
     env_file:
       - .env
   cloudflared:
     image: cloudflare/cloudflared:latest
+    container_name: website-backend-tunnel
     restart: unless-stopped
-    network_mode: host
-    command: tunnel run --url http://localhost:3000
+    networks: [website]
+    command: tunnel run --url http://website-backend:3000
     environment:
       - TUNNEL_TOKEN=${TUNNEL_TOKEN}
     depends_on:
       - website-backend
+
+networks:
+  website:
