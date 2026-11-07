@@ -1,4 +1,5 @@
 import { drizzle } from "drizzle-orm/better-sqlite3";
+import { migrate } from "drizzle-orm/better-sqlite3/migrator";
 
 import Fastify, { type FastifyReply } from "fastify";
 import { Type, TypeBoxTypeProvider } from "@fastify/type-provider-typebox";
@@ -14,16 +15,26 @@ import cron from "node-cron";
 import proxy from "@fastify/http-proxy";
 import { Config } from "./config.js";
 import { log } from "./log.js";
+import { fileURLToPath } from "node:url";
 
 if (!Config.ntfy.generalNotifications) {
   log("INFO", "General notifications are DISABLED");
 }
+
+mkdirSync(path.dirname(Config.database.filename), { recursive: true });
 
 const sqlite_db = new Database(Config.database.filename);
 sqlite_db.pragma("foreign_keys = ON");
 sqlite_db.pragma("journal_mode = WAL");
 
 const db = drizzle(sqlite_db);
+migrate(db, {
+  migrationsFolder: path.resolve(
+    path.dirname(fileURLToPath(import.meta.url)),
+    "../drizzle",
+  ),
+});
+log("DEBUG", "Database migrations applied");
 
 const fastify = Fastify({
   logger: Config.fastifyLogger,

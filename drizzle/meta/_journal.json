@@ -15,6 +15,13 @@
       "when": 1793719497220,
       "tag": "0001_equal_prism",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1794089811701,
+      "tag": "0002_lovely_barracuda",
+      "breakpoints": true
     }
   ]
 }
