@@ -3,6 +3,7 @@ services:
     image: ghcr.io/wirelessfish/website-backend:latest
     networks: [website]
     container_name: website-backend
+    init: true
     dns:
       - 1.1.1.1
       - 8.8.8.8
