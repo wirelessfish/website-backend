@@ -34,7 +34,7 @@ if (Config.cors.enabled) {
     origin: Config.cors.allowList,
   });
 
-  log("DEBUG", "CORS is set to ${Config.cors.allowList}`");
+  log("DEBUG", `CORS is set to ${Config.cors.allowList}`);
 } else {
   await fastify.register(cors, {
     origin: "*",
