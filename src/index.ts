@@ -6,7 +6,7 @@ import cors from "@fastify/cors";
 import rateLimit from "@fastify/rate-limit";
 import { guestbookTable, ntfyTable } from "./db/schema.js";
 import fetch from "node-fetch";
-import { and, eq, isNotNull, isNull } from "drizzle-orm";
+import { and, eq, isNotNull, isNull, desc } from "drizzle-orm";
 import Database from "better-sqlite3";
 import path from "node:path";
 import { mkdirSync, readdirSync, statSync, unlinkSync } from "node:fs";
@@ -16,6 +16,12 @@ import { Config } from "./config.js";
 
 if (!Config.ntfy.generalNotifications) {
   console.log("[INFO] General notifications are DISABLED");
+}
+
+if (!Config.cors.enabled) {
+  console.log("[INFO] CORS is set to ['*']");
+} else {
+  console.log(`[INFO] CORS is set to ${Config.cors.allowList}`);
 }
 
 const sqlite_db = new Database(Config.database.filename);
@@ -291,6 +297,7 @@ fastify.post(
     await ntfy("notif", `Guestbook entry by ${request.body.name}`);
 
     await reply.code(201);
+    return;
   },
 );
 
@@ -301,7 +308,7 @@ fastify.get("/guestbook", async function (request, reply) {
     .where(
       and(isNull(guestbookTable.reply), eq(guestbookTable.status, "visible")),
     )
-    .orderBy(guestbookTable.date);
+    .orderBy(desc(guestbookTable.date));
 
   let replies = await db
     .select()
@@ -312,19 +319,21 @@ fastify.get("/guestbook", async function (request, reply) {
         eq(guestbookTable.status, "visible"),
       ),
     )
-    .orderBy(guestbookTable.date);
+    .orderBy(desc(guestbookTable.date));
 
   let responseComments = new Array();
 
   comments.forEach((c) => {
     // omit reply and status
 
+    const isoDate = c.date.replace(" ", "T") + "Z";
+
     let entry = {
       id: c.id,
       name: c.name,
       content: c.content,
       site: c.site,
-      date: c.date,
+      date: isoDate,
       badge: c.badge,
 
       replies: new Array(),
@@ -333,12 +342,14 @@ fastify.get("/guestbook", async function (request, reply) {
     replies
       .filter((r) => r.reply === c.id)
       .forEach((r) => {
+        const replyIsoDate = r.date.replace(" ", "T") + "Z";
+
         let reply = {
           id: r.id,
           name: r.name,
           content: r.content,
           site: r.site,
-          date: r.date,
+          date: replyIsoDate,
           badge: r.badge,
         };
 
@@ -348,7 +359,11 @@ fastify.get("/guestbook", async function (request, reply) {
     responseComments.push(entry);
   });
 
-  await reply.send(responseComments).code(200);
+  await reply
+    .send({
+      entries: responseComments,
+    })
+    .code(200);
 });
 
 cron.schedule("0 2 * * Sunday", async () => {

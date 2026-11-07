@@ -18,9 +18,7 @@ if (!USER_AGENT) throw new Error("USER_AGENT not set");
 const LASTFM_API_KEY = process.env.LASTFM_API_KEY;
 if (!LASTFM_API_KEY) throw new Error("LASTFM_API_KEY not set");
 
-const CORS_ENABLED = process.env.CORS_ENABLED;
-if (!CORS_ENABLED) throw new Error("CORS_ENABLED not set");
-
+const CORS_ENABLED = process.env.CORS_ENABLED !== "false";
 const RATELIMIT = process.env.RATELIMIT !== "false";
 const GENERAL_NOTIFICATIONS = process.env.GENERAL_NOTIFICATIONS !== "false";
 
