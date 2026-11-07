@@ -365,7 +365,7 @@ fastify.post(
       log("ERROR", `ntfy error`, e);
     }
 
-    await reply.code(200);
+    return reply.code(200).send();
   },
 );
 
