@@ -23,7 +23,7 @@ const RATELIMIT = process.env.RATELIMIT !== "false";
 const GENERAL_NOTIFICATIONS = process.env.GENERAL_NOTIFICATIONS !== "false";
 
 export const Config = {
-  port: 3000,
+  port: 6778,
   fastifyLogger: false,
   userAgent: USER_AGENT,
   ratelimit: RATELIMIT,
