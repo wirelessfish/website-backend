@@ -1,7 +1,6 @@
-import "dotenv/config";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 
-import Fastify from "fastify";
+import Fastify, { type FastifyReply } from "fastify";
 import { Type, TypeBoxTypeProvider } from "@fastify/type-provider-typebox";
 import cors from "@fastify/cors";
 import rateLimit from "@fastify/rate-limit";
@@ -13,31 +12,13 @@ import path from "node:path";
 import { mkdirSync, readdirSync, statSync, unlinkSync } from "node:fs";
 import cron from "node-cron";
 import proxy from "@fastify/http-proxy";
+import { Config } from "./config.js";
 
-const DB_FILE_NAME = process.env.DB_FILE_NAME;
-if (!DB_FILE_NAME) throw new Error("DB_FILE_NAME not set");
+if (!Config.ntfy.generalNotifications) {
+  console.log("[INFO] General notifications are DISABLED");
+}
 
-const NTFY_ENDPOINT = process.env.NTFY_ENDPOINT;
-if (!NTFY_ENDPOINT) throw new Error("NTFY_ENDPOINT not set");
-
-const NTFY_NOTIFICATION = process.env.NTFY_NOTIFICATION;
-if (!NTFY_NOTIFICATION) throw new Error("NTFY_NOTIFICATION not set");
-
-const DB_BACKUP_DIR = process.env.DB_BACKUP_DIR;
-if (!DB_BACKUP_DIR) throw new Error("DB_BACKUP_DIR not set");
-
-const BACKUPS_KEPT = Number(process.env.BACKUPS_KEPT);
-if (!BACKUPS_KEPT) throw new Error("BACKUPS_KEPT not set");
-
-const LISTENBRAINZ_TOKEN = process.env.LISTENBRAINZ_TOKEN;
-if (!LISTENBRAINZ_TOKEN) throw new Error("LISTENBRAINZ_TOKEN not set");
-
-const USER_AGENT = process.env.USER_AGENT;
-if (!USER_AGENT) throw new Error("USER_AGENT not set");
-
-const RATELIMIT = process.env.RATELIMIT !== "false";
-
-const sqlite_db = new Database(DB_FILE_NAME);
+const sqlite_db = new Database(Config.database.filename);
 sqlite_db.pragma("foreign_keys = ON");
 sqlite_db.pragma("journal_mode = WAL");
 
@@ -47,41 +28,106 @@ const fastify = Fastify({
   logger: true,
 }).withTypeProvider<TypeBoxTypeProvider>();
 
-await fastify.register(cors, {
-  origin: "https://wireless.fish",
-});
+if (Config.cors.enabled) {
+  await fastify.register(cors, {
+    origin: Config.cors.allowList,
+  });
+} else {
+  await fastify.register(cors, {
+    origin: "*",
+  });
+}
 
-if (RATELIMIT) {
+if (Config.ratelimit) {
   await fastify.register(rateLimit, {
     max: 64,
     timeWindow: "1 minute",
   });
 }
 
+async function checkLastFmHealth(reply: FastifyReply) {
+  const url = new URL("/2.0/", Config.lastfm.upstream);
+  url.searchParams.set("method", "chart.gettopartists");
+  url.searchParams.set("api_key", Config.lastfm.apiKey);
+  url.searchParams.set("format", "json");
+
+  const response = await fetch(url);
+  return response;
+}
+
 fastify.register(proxy, {
-  upstream: "https://api.listenbrainz.org",
-  prefix: "/listenbrainz",
-  http2: false,
-  replyOptions: {
-    rewriteRequestHeaders: (original, headers) => ({
-      ...headers,
-      Authorization: `Token ${LISTENBRAINZ_TOKEN}`,
-      "user-agent": USER_AGENT,
-    }),
+  upstream: Config.lastfm.upstream,
+  prefix: Config.lastfm.prefix,
+  rewritePrefix: "/2.0/",
+  httpMethods: ["GET"],
+  preHandler: async (request, reply) => {
+    const reqQuery = request.query as { method?: unknown };
+    const method = reqQuery.method;
+
+    // Healthcheck
+    if (method === undefined) {
+      let response = await checkLastFmHealth(reply);
+
+      if (!response.ok) {
+        await reply.code(502).send({
+          status: "unhealthy",
+          upstreamStatus: response.status,
+        });
+
+        return;
+      }
+
+      await reply.send({
+        status: "healthy",
+        upstreamStatus: response.status,
+      });
+
+      return;
+    }
+
+    // Query method check
+    if (
+      typeof method !== "string" ||
+      !Config.lastfm.methods.includes(
+        method as (typeof Config.lastfm.methods)[number],
+      )
+    ) {
+      await reply.code(400).send({
+        error: "Unsupported or missing Last.fm method",
+      });
+      return;
+    }
   },
-  config: {
-    rateLimit: {
-      max: 1,
-      timeWindow: "1 second",
-    },
+  handler: async (request, reply, dest, options) => {
+    const requestUrl = new URL(request.url, Config.lastfm.upstream);
+    const upstreamUrl = new URL(dest, Config.lastfm.upstream);
+    const query = upstreamUrl.searchParams;
+
+    for (const [key, value] of requestUrl.searchParams) {
+      query.set(key, value);
+    }
+
+    query.set("api_key", Config.lastfm.apiKey);
+    query.set("format", "json");
+
+    // Debug thing
+    // console.log(`Last.fm proxy fetching: ${upstreamUrl}`);
+
+    await reply.from(`${upstreamUrl.pathname}?${query.toString()}`, options);
+    return;
   },
 });
 
 async function ntfy(type: "endpoint" | "notif", content: string) {
   const url =
     type === "endpoint"
-      ? (NTFY_ENDPOINT as string)
-      : (NTFY_NOTIFICATION as string);
+      ? (Config.ntfy.notifEndpoint as string)
+      : (Config.ntfy.notifications as string);
+
+  // General notifications are disabled
+  if (type === "notif" && !Config.ntfy.generalNotifications) {
+    return;
+  }
 
   await fetch(url, {
     method: "POST",
@@ -93,16 +139,16 @@ export async function backup() {
   console.log(`[${Date.now()}] Backup initiated`);
 
   const backupPath = path.join(
-    DB_BACKUP_DIR as string,
+    Config.database.backupDir,
     `${Date.now()}.backup.db`,
   );
 
   try {
-    mkdirSync(DB_BACKUP_DIR as string, { recursive: true });
+    mkdirSync(Config.database.backupDir as string, { recursive: true });
   } catch (e) {
     if (e instanceof Error) {
       console.log(
-        `Failed to create the backup directory ${DB_BACKUP_DIR}\n${e}`,
+        `Failed to create the backup directory ${Config.database.backupDir}\n${e}`,
       );
 
       await ntfy(
@@ -120,10 +166,12 @@ export async function backup() {
 
     console.log("Purging old backups");
 
-    const files = readdirSync(DB_BACKUP_DIR as string, { withFileTypes: true })
+    const files = readdirSync(Config.database.backupDir as string, {
+      withFileTypes: true,
+    })
       .filter((f) => f.isFile() && f.name.includes(".backup.db"))
       .map((f) => {
-        const filePath = path.join(DB_BACKUP_DIR as string, f.name);
+        const filePath = path.join(Config.database.backupDir as string, f.name);
         return {
           name: f.name,
           path: filePath,
@@ -132,7 +180,7 @@ export async function backup() {
       });
 
     files.sort((a, b) => b.birthtime.getTime() - a.birthtime.getTime());
-    const filesToDelete = files.slice(BACKUPS_KEPT);
+    const filesToDelete = files.slice(Config.database.backupsKept);
     filesToDelete.forEach((f) => unlinkSync(f.path));
 
     console.log("Old backups deleted");
