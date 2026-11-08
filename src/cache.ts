@@ -18,12 +18,12 @@ export function cacheGet(key: string): any {
     return;
   }
 
-  log("DEBUG", "Cache hit", key);
+  //   log("DEBUG", "Cache hit", key);
   return v.data;
 }
 
 export function cache(key: string, value: any, ttl: ms.StringValue) {
-  log("DEBUG", "Cache set", key, "with ttl", ttl);
+  //   log("DEBUG", "Cache set", key, "with ttl", ttl);
 
   const now = new Date();
   const ttlDate = addMilliseconds(now, ms(ttl));
