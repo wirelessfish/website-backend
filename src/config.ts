@@ -27,6 +27,7 @@ export const Config = {
   fastifyLogger: false,
   userAgent: USER_AGENT,
   ratelimit: RATELIMIT,
+  cacheMaxEntries: 256,
   lastfm: {
     upstream: "https://ws.audioscrobbler.com",
     prefix: "/lastfm",

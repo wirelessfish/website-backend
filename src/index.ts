@@ -16,6 +16,7 @@ import proxy from "@fastify/http-proxy";
 import { Config } from "./config.js";
 import { log } from "./log.js";
 import { fileURLToPath } from "node:url";
+import { cache, cacheGet } from "./cache.js";
 
 if (!Config.ntfy.generalNotifications) {
   log("INFO", "General notifications are DISABLED");
@@ -130,13 +131,26 @@ fastify.register(proxy, {
     logUpstreamURL.searchParams.set("api_key", "hidden");
     log("DEBUG", `Last.fm proxy fetching: ${logUpstreamURL}`);
 
-    const lastFmResponse = await fetch(upstreamUrl);
-    if (!lastFmResponse.ok) {
-      log("ERROR", "LastFM reply not ok");
-      return reply.from(dest, options);
+    let lastFmResponse = cacheGet(upstreamUrl.toString());
+
+    if (!lastFmResponse) {
+      lastFmResponse = await fetch(upstreamUrl);
+
+      if (!lastFmResponse.ok) {
+        log("ERROR", "LastFM reply not ok");
+        return reply.from(dest, options);
+      }
+
+      const lastFmData = await lastFmResponse.json();
+
+      if (method !== "user.getrecenttracks" && method !== "user.getinfo") {
+        cache(logUpstreamURL.toString(), lastFmData, "1hour");
+      }
+
+      lastFmResponse = lastFmData;
     }
 
-    const lastFmData = (await lastFmResponse.json()) as {
+    const lastFmData = lastFmResponse as {
       topartists?: {
         artist?: Array<{
           name?: string;
@@ -163,17 +177,26 @@ fastify.register(proxy, {
           deezerUrl.searchParams.set("limit", "10");
           deezerUrl.searchParams.set("strict", "on");
 
-          const deezerResponse = await fetch(deezerUrl);
+          let deezerResponse = cacheGet(deezerUrl.toString());
 
-          if (!deezerResponse.ok) {
-            log(
-              "ERROR",
-              `Deezer artist request failed (${deezerResponse.status})`,
-            );
-            return;
+          if (!deezerResponse) {
+            deezerResponse = await fetch(deezerUrl);
+
+            if (!deezerResponse.ok) {
+              log(
+                "ERROR",
+                `Deezer artist request failed (${deezerResponse.status})`,
+              );
+              return;
+            }
+
+            const deezerData = await deezerResponse.json();
+
+            cache(deezerUrl.toString(), deezerData, "7day");
+            deezerResponse = deezerData;
           }
 
-          const deezerData = (await deezerResponse.json()) as {
+          const deezerData = deezerResponse as {
             data?: Array<{
               picture_small?: string;
               picture_medium?: string;
